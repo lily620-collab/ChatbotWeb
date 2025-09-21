@@ -1,92 +1,98 @@
-from flask import Flask, render_template, request, jsonify
-import random
+from flask import Flask, render_template, request, jsonify, session
 import json
 import os
+import uuid
 
 app = Flask(__name__)
+app.secret_key = "super_secret_key_123"  # Needed for sessions
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MEMORY_FILE = os.path.join(BASE_DIR, "chatbot_memory.json")
+
+# Load or create memory safely
+if not os.path.exists(MEMORY_FILE):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump({}, f)
+
+try:
+    with open(MEMORY_FILE, "r") as f:
+        memory = json.load(f)
+except json.JSONDecodeError:
+    memory = {}
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(memory, f)
 
 bot_name = "Astra"
-bot_personality = [
-    "I'm always happy to chat!",
-    "I love learning new things.",
-    "Sometimes I can be a little silly 😄",
-    "I like helping people solve problems."
-]
-
-DATA_FILE = "chatbot_memory.json"
-
-# Load or create memory
-if os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "r") as f:
-        memory = json.load(f)
-else:
-    memory = {"conversation": [], "user_info": {}}
-
-responses = {
-    "hi": ["Hello {name}!", "Hey {name}! How are you today?", "Hi {name}! Nice to see you!"],
-    "how are you": ["I'm doing great, thanks!", "Feeling fantastic! How about you?"],
-    "bye": ["Goodbye {name}!", "See you later {name}!", "Talk to you soon {name}!"],
-    "name": ["My name is Astra!", "You can call me Astra."],
-    "favorite": ["I remember you like {favorite_item}!", "You told me your favorite is {favorite_item}, right?"],
-    "default": [
-        "Interesting! Tell me more.",
-        "Hmm, I see.",
-        "Can you explain that a bit more?",
-        "Wow, that's cool!"
-    ]
-}
+personality = "Friendly AI chatbot that remembers you!"
 
 def save_memory():
-    with open(DATA_FILE, "w") as f:
+    with open(MEMORY_FILE, "w") as f:
         json.dump(memory, f, indent=4)
 
-def update_user_info(user_input):
-    if "my name is" in user_input.lower():
+def get_user_id():
+    if "user_id" not in session:
+        session["user_id"] = str(uuid.uuid4())
+    return session["user_id"]
+
+def get_user_memory(user_id):
+    if user_id not in memory:
+        memory[user_id] = {"conversation": [], "user_info": {}}
+    return memory[user_id]
+
+def update_user_info(user_memory, user_input):
+    user_input_lower = user_input.lower()
+
+    if "my name is" in user_input_lower:
         name = user_input.split("my name is")[-1].strip().capitalize()
-        memory["user_info"]["name"] = name
-        save_memory()
+        user_memory["user_info"]["name"] = name
         return f"Nice to meet you, {name}!"
 
-    if "my favorite" in user_input.lower():
+    if "i am" in user_input_lower and "years old" in user_input_lower:
+        age = ''.join([c for c in user_input_lower if c.isdigit()])
+        if age:
+            user_memory["user_info"]["age"] = age
+            return f"Wow, {age} years old! Cool!"
+
+    if "my hobby is" in user_input_lower:
+        hobby = user_input.split("my hobby is")[-1].strip()
+        user_memory["user_info"]["hobby"] = hobby
+        return f"Nice! I will remember that your hobby is {hobby}."
+
+    if "my favorite food is" in user_input_lower:
+        food = user_input.split("my favorite food is")[-1].strip()
+        user_memory["user_info"]["favorite_food"] = food
+        return f"Yum! I will remember that your favorite food is {food}."
+
+    if "my favorite" in user_input_lower:
         item = user_input.split("my favorite")[-1].strip()
-        memory["user_info"]["favorite_item"] = item
-        save_memory()
+        user_memory["user_info"]["favorite_item"] = item
         return f"Got it! Your favorite is {item}."
 
     return None
 
-def chatbot_response(user_input):
-    user_input_lower = user_input.lower()
-    info_response = update_user_info(user_input_lower)
-    if info_response:
-        return info_response
-
-    name = memory["user_info"].get("name", "")
-    favorite_item = memory["user_info"].get("favorite_item", "")
-
-    for key in responses:
-        if key in user_input_lower:
-            return random.choice(responses[key]).format(name=name, favorite_item=favorite_item)
-
-    for past in memory["conversation"][-5:]:
-        if "?" in user_input_lower and past.get("user") and past["user"].lower() in user_input_lower:
-            return f"Earlier you mentioned {past['user']}. Can you tell me more about it?"
-
-    return random.choice(responses["default"])
-
 @app.route("/")
-def index():
-    return render_template("index.html", bot_name=bot_name, personality=random.choice(bot_personality))
+def home():
+    return render_template("index.html", bot_name=bot_name, personality=personality)
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    user_input = request.json.get("message")
-    memory["conversation"].append({"user": user_input})
-    reply = chatbot_response(user_input)
-    memory["conversation"].append({"bot": reply})
-    save_memory()
-    return jsonify({"reply": reply})
+    user_input = request.get_json().get("message", "")
+    user_id = get_user_id()
+    user_memory = get_user_memory(user_id)
 
+    response = update_user_info(user_memory, user_input)
+    if not response:
+        response = f"I heard you say: {user_input}"
+
+    user_memory["conversation"].append({"user": user_input, "bot": response})
+    memory[user_id] = user_memory
+    save_memory()
+
+    return jsonify({"reply": response})
+
+# Render-friendly host & port
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # for deployment
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+
